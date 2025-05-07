@@ -2,13 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Voxel MP Test</title>
+  <title>Voxel Shooter Prototype</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="overlay">Click to Play</div>
+  <div id="crosshair">+</div>
   <canvas id="gameCanvas"></canvas>
+
+  <!-- Three.js CDN -->
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+  <!-- Socket.IO client -->
   <script src="/socket.io/socket.io.js"></script>
+
+  <!-- Game logic -->
   <script src="client.js"></script>
 </body>
 </html>
