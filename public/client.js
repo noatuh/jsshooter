@@ -47,59 +47,16 @@ function ImprovedNoise() {
 const perlin = new ImprovedNoise();
 
 /* ---------------- CHUNKED TERRAIN ---------------- */
-const CHUNK      = 16;        // blocks per side
-const RENDER_DIST = 2;        // chunks radius
 const blockGeom  = new THREE.BoxGeometry(1, 1, 1);
 const blockMat   = new THREE.MeshLambertMaterial({ color: 0x777755 });
 
-const chunks      = new Map();  // key -> {group, blocks[]}
-const voxelMeshes = [];         // for ray‑casting
-const voxelData   = [];         // {x,y,z,mesh}
-
-const key = (cx, cz) => `${cx},${cz}`;
+const voxelData   = [];         // {x,y,z, instanceId} - Store instanceId for lookup
+let terrainInstancedMesh;       // Will hold our InstancedMesh
 
 function heightAt(wx, wz) {
   const scale = 0.06, amp = 8;
   return Math.floor((perlin.noise(wx * scale, 0, wz * scale) + 1) * amp * 0.5);
 }
-
-function loadChunk(cx, cz) {
-  if (chunks.has(key(cx, cz))) return;
-  const grp = new THREE.Group(), blocks = [];
-  for (let x = 0; x < CHUNK; x++) {
-    for (let z = 0; z < CHUNK; z++) {
-      const wx = cx * CHUNK + x, wz = cz * CHUNK + z, h = heightAt(wx, wz);
-      for (let y = 0; y <= h; y++) {
-        const m = new THREE.Mesh(blockGeom, blockMat);
-        m.position.set(wx, y, wz);
-        m.userData = { isBlock: true, coord: { x: wx, y, z: wz } };
-        grp.add(m); blocks.push(m); voxelMeshes.push(m); voxelData.push({ x: wx, y, z: wz, mesh: m });
-      }
-    }
-  }
-  scene.add(grp); chunks.set(key(cx, cz), { group: grp, blocks });
-}
-
-function unloadChunk(cx, cz) {
-  const ch = chunks.get(key(cx, cz)); if (!ch) return;
-  for (const m of ch.blocks) {
-    voxelMeshes.splice(voxelMeshes.indexOf(m), 1);
-    const idx = voxelData.findIndex(o => o.mesh === m);
-    if (idx !== -1) voxelData.splice(idx, 1);
-  }
-  scene.remove(ch.group); chunks.delete(key(cx, cz));
-}
-
-function manageChunks(px, pz) {
-  const ccx = Math.floor(px / CHUNK), ccz = Math.floor(pz / CHUNK);
-  for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++)
-    for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) loadChunk(ccx + dx, ccz + dz);
-  for (const k of chunks.keys()) {
-    const [cx, cz] = k.split(',').map(Number);
-    if (Math.max(Math.abs(cx - ccx), Math.abs(cz - ccz)) > RENDER_DIST) unloadChunk(cx, cz);
-  }
-}
-manageChunks(0, 0);
 
 /* ---------------- PLAYER & CAMERA ---------------- */
 const players = {};
@@ -145,8 +102,6 @@ function movePlayer() {
   }
   localPlayer.pos.y = heightAt(localPlayer.pos.x, localPlayer.pos.z) + 1;
 
-  manageChunks(localPlayer.pos.x, localPlayer.pos.z);
-
   localPlayer.mesh.position.set(localPlayer.pos.x, localPlayer.pos.y, localPlayer.pos.z);
   camera.position.set(localPlayer.pos.x, localPlayer.pos.y + 1.6, localPlayer.pos.z);
 
@@ -155,31 +110,101 @@ function movePlayer() {
 
 /* ---------------- BLOCK DESTRUCTION ---------------- */
 const ray = new THREE.Raycaster();
-function deleteBlock(mesh, broadcast = true) {
-  if (!mesh.userData.isBlock) return;
-  const { x, y, z } = mesh.userData.coord;
-  const ch = chunks.get(key(Math.floor(x / CHUNK), Math.floor(z / CHUNK)));
-  if (ch) ch.group.remove(mesh);
-  voxelMeshes.splice(voxelMeshes.indexOf(mesh), 1);
-  const idx = voxelData.findIndex(o => o.mesh === mesh); if (idx !== -1) voxelData.splice(idx, 1);
-  if (broadcast) socket.emit('removeBlock', { x, y, z });
+const dummy = new THREE.Object3D(); // Used to set instance transforms
+
+function deleteBlock(instanceId, broadcast = true) {
+  if (terrainInstancedMesh && instanceId !== undefined) {
+    // "Hide" the instance by scaling it to zero
+    dummy.scale.set(0, 0, 0);
+    dummy.updateMatrix();
+    terrainInstancedMesh.setMatrixAt(instanceId, dummy.matrix);
+    terrainInstancedMesh.instanceMatrix.needsUpdate = true;
+
+    // Mark the block as removed in voxelData if needed for game logic
+    const blockInfo = voxelData.find(v => v.instanceId === instanceId);
+    if (blockInfo) {
+      blockInfo.removed = true; // Mark as removed
+      if (broadcast) {
+        socket.emit('removeBlock', { x: blockInfo.x, y: blockInfo.y, z: blockInfo.z });
+      }
+    }
+  }
 }
+
 function breakBlock() {
-  if (document.pointerLockElement !== renderer.domElement) return;
+  if (document.pointerLockElement !== renderer.domElement || !terrainInstancedMesh) return;
   ray.setFromCamera(new THREE.Vector2(0, 0), camera);
-  const hit = ray.intersectObjects(voxelMeshes, false)[0];
-  if (hit) deleteBlock(hit.object);
+  const intersects = ray.intersectObject(terrainInstancedMesh, false); // Intersect with InstancedMesh
+  
+  if (intersects.length > 0) {
+    const hit = intersects[0];
+    if (hit.instanceId !== undefined) {
+      // Check if this instance is already "removed" (scaled to zero)
+      const currentMatrix = new THREE.Matrix4();
+      terrainInstancedMesh.getMatrixAt(hit.instanceId, currentMatrix);
+      const scale = new THREE.Vector3();
+      currentMatrix.decompose(new THREE.Vector3(), new THREE.Quaternion(), scale);
+      
+      if (scale.x > 0.001) { // Check if not already scaled to zero
+        deleteBlock(hit.instanceId);
+      }
+    }
+  }
 }
 document.addEventListener('mousedown', e => { if (e.button === 0) breakBlock(); });
 
 /* ---------------- SOCKET.IO EVENTS ---------------- */
-socket.on('init', data => { for (const id in data) if (id !== socket.id) addRemote(id, data[id]); });
+socket.on('init', data => { 
+  // Load preloaded map
+  if (data.mapData && data.mapData.length > 0) {
+    console.log(`Received map with ${data.mapData.length} blocks. Initializing InstancedMesh.`);
+    
+    // Dispose of old mesh if any (e.g., on reconnect)
+    if (terrainInstancedMesh) {
+      scene.remove(terrainInstancedMesh);
+      terrainInstancedMesh.dispose();
+    }
+    voxelData.length = 0; // Clear previous voxel data
+
+    terrainInstancedMesh = new THREE.InstancedMesh(blockGeom, blockMat, data.mapData.length);
+    terrainInstancedMesh.userData.isBlockContainer = true; // For identification if needed
+
+    let instanceIdx = 0;
+    for (const block of data.mapData) {
+      dummy.position.set(block.x, block.y, block.z);
+      dummy.scale.set(1,1,1); // Ensure it's visible
+      dummy.updateMatrix();
+      terrainInstancedMesh.setMatrixAt(instanceIdx, dummy.matrix);
+      
+      voxelData.push({ x: block.x, y: block.y, z: block.z, instanceId: instanceIdx, removed: false });
+      instanceIdx++;
+    }
+    terrainInstancedMesh.instanceMatrix.needsUpdate = true;
+    scene.add(terrainInstancedMesh);
+    console.log("InstancedMesh created and added to scene.");
+  }
+
+  // Load players
+  for (const id in data.players) {
+    if (id !== socket.id) {
+      addRemote(id, data.players[id]);
+    } else { // Set local player's initial position from server
+      localPlayer.pos.x = data.players[id].x;
+      localPlayer.pos.y = data.players[id].y;
+      localPlayer.pos.z = data.players[id].z;
+      localPlayer.mesh.position.set(localPlayer.pos.x, localPlayer.pos.y, localPlayer.pos.z);
+      camera.position.set(localPlayer.pos.x, localPlayer.pos.y + 1.6, localPlayer.pos.z);
+    }
+  }
+});
 socket.on('playerJoined', d => addRemote(d.id, d));
 socket.on('playerMoved',  d => players[d.id] && players[d.id].mesh.position.set(d.x, d.y, d.z));
 socket.on('playerLeft',   id => { if (players[id]) { scene.remove(players[id].mesh); delete players[id]; } });
 socket.on('blockRemoved', c => {
-  const obj = voxelData.find(o => o.x === c.x && o.y === c.y && o.z === c.z);
-  if (obj) deleteBlock(obj.mesh, false);
+  const blockInfo = voxelData.find(o => o.x === c.x && o.y === c.y && o.z === c.z && !o.removed);
+  if (blockInfo) {
+    deleteBlock(blockInfo.instanceId, false); // Don't re-broadcast
+  }
 });
 function addRemote(id, pos) {
   const m = new THREE.Mesh(pGeom, new THREE.MeshLambertMaterial({ color: 0x0000ff }));
