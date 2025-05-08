@@ -53,7 +53,7 @@ function heightAtServer(wx, wz) {
 const MAP_CHUNK_WIDTH = 8;    // 8 chunks wide
 const MAP_CHUNK_DEPTH = 8;    // 8 chunks deep
 const CHUNK_SIZE = 16;        // 16 blocks per chunk side
-const preloadedMapData = [];
+const preloadedMapData = []; // This will now store {x, y, z} objects
 
 function generatePreloadedMap() {
   console.log('Generating preloaded map...');
@@ -79,10 +79,10 @@ io.on('connection', socket => {
   console.log(`Client connected: ${socket.id}`);
 
   // spawn new player at origin
-  players[socket.id] = { x: 0, y: heightAtServer(0,0) + 1, z: 0 }; // Use server height for initial spawn
+  players[socket.id] = { x: 0, y: heightAtServer(0,0) + 1, z: 0 };
 
   // send current roster and preloaded map to the newcomer
-  socket.emit('init', { players, mapData: preloadedMapData });
+  socket.emit('init', { players, mapData: [...preloadedMapData] }); // Send a copy
 
   // announce newcomer to everyone else
   socket.broadcast.emit('playerJoined', { id: socket.id, ...players[socket.id] });
@@ -95,13 +95,35 @@ io.on('connection', socket => {
 
   // block‑destruction broadcast
   socket.on('removeBlock', coord => {
-    // Remove block from server's map data
     const index = preloadedMapData.findIndex(block => block.x === coord.x && block.y === coord.y && block.z === coord.z);
     if (index !== -1) {
       preloadedMapData.splice(index, 1);
       console.log(`Block removed at ${coord.x},${coord.y},${coord.z}. Remaining blocks: ${preloadedMapData.length}`);
+      // Broadcast to all clients (including sender for consistency, though sender already updated locally)
+      io.emit('blockRemoved', coord); // Changed from socket.broadcast.emit
     }
-    socket.broadcast.emit('blockRemoved', coord);
+  });
+
+  // block-placement broadcast
+  socket.on('placeBlockRequest', coord => {
+    // Validate placement (e.g., not inside another block)
+    const alreadyExists = preloadedMapData.some(
+      block => block.x === coord.x && block.y === coord.y && block.z === coord.z
+    );
+    // Basic validation: prevent placing inside player (approximate)
+    const tooCloseToPlayer = Object.values(players).some(p => {
+        return Math.abs(p.x - coord.x) < 1 && Math.abs(p.y - coord.y) < 2 && Math.abs(p.z - coord.z) < 1;
+    });
+
+    if (!alreadyExists && !tooCloseToPlayer) {
+      preloadedMapData.push({ x: coord.x, y: coord.y, z: coord.z });
+      console.log(`Block placed at ${coord.x},${coord.y},${coord.z}. Total blocks: ${preloadedMapData.length}`);
+      io.emit('blockPlaced', coord); // Broadcast to all clients
+    } else {
+      console.log(`Invalid placement request at ${coord.x},${coord.y},${coord.z}. Exists: ${alreadyExists}, TooClose: ${tooCloseToPlayer}`);
+      // Optionally, send a rejection message back to the requester
+      // socket.emit('placementFailed', coord); 
+    }
   });
 
   // handle disconnect
