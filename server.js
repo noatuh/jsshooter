@@ -50,8 +50,8 @@ function heightAtServer(wx, wz) {
 }
 
 /* ---------------- PRELOADED MAP ---------------- */
-const MAP_CHUNK_WIDTH = 8;    // 8 chunks wide
-const MAP_CHUNK_DEPTH = 8;    // 8 chunks deep
+const MAP_CHUNK_WIDTH = 16;    // 8 chunks wide
+const MAP_CHUNK_DEPTH = 16;    // 8 chunks deep
 const CHUNK_SIZE = 16;        // 16 blocks per chunk side
 const preloadedMapData = []; // This will now store {x, y, z} objects
 
