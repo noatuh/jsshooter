@@ -127,11 +127,8 @@ function deleteBlock(instanceId, broadcast = true) {
 
     blockInfo.removed = true; 
     if (broadcast) {
-      // Find the original block data to send coordinates
-      const originalBlock = clientMapData[instanceId]; // Assuming instanceId directly maps to clientMapData index
-      if (originalBlock) {
-        socket.emit('removeBlock', { x: originalBlock.x, y: originalBlock.y, z: originalBlock.z });
-      }
+      // Send the actual coordinates of the block being removed
+      socket.emit('removeBlock', { x: blockInfo.x, y: blockInfo.y, z: blockInfo.z });
     }
   }
 }
@@ -250,20 +247,26 @@ socket.on('playerJoined', d => addRemote(d.id, d));
 socket.on('playerMoved',  d => players[d.id] && players[d.id].mesh.position.set(d.x, d.y, d.z));
 socket.on('playerLeft',   id => { if (players[id]) { scene.remove(players[id].mesh); delete players[id]; } });
 socket.on('blockRemoved', coord => {
-  const blockIndex = clientMapData.findIndex(b => b.x === coord.x && b.y === coord.y && b.z === coord.z);
-  if (blockIndex !== -1) {
-    const vDataEntry = voxelData.find(v => v.x === coord.x && v.y === coord.y && v.z === coord.z && !v.removed);
-    if (vDataEntry) {
-        deleteBlock(vDataEntry.instanceId, false); // false because server already broadcasted
-    }
+  const vDataEntry = voxelData.find(v => v.x === coord.x && v.y === coord.y && v.z === coord.z && !v.removed);
+  if (vDataEntry) {
+    deleteBlock(vDataEntry.instanceId, false); // Call with broadcast = false as server already handled it
   }
+
+  // Update clientMapData to reflect the removal.
+  // This ensures clientMapData is accurate for subsequent operations like placing blocks.
+  const mapDataIndex = clientMapData.findIndex(b => b.x === coord.x && b.y === coord.y && b.z === coord.z);
+  if (mapDataIndex !== -1) {
+    clientMapData.splice(mapDataIndex, 1);
+  }
+  // Note: We don't need to call rebuildInstancedMesh() here because hiding an instance is sufficient for removal.
+  // clientMapData.length will be out of sync with terrainInstancedMesh.count, but voxelData tracks 'removed' status.
 });
 
 socket.on('blockPlaced', coord => {
   const alreadyExists = clientMapData.some(b => b.x === coord.x && b.y === coord.y && b.z === coord.z);
   if (!alreadyExists) {
-    clientMapData.push(coord);
-    rebuildInstancedMesh(); // This will update voxelData with correct instanceIds
+    clientMapData.push(coord); // Add to client's source of truth
+    rebuildInstancedMesh(); // Rebuild mesh to include the new block and update voxelData
   }
 });
 function addRemote(id, pos) {
