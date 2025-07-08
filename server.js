@@ -93,6 +93,17 @@ io.on('connection', socket => {
     socket.broadcast.emit('playerMoved', { id: socket.id, ...pos });
   });
 
+  // Handle new physics-based movement
+  socket.on('playerMove', pos => {
+    players[socket.id] = pos;
+    socket.broadcast.emit('playerMoved', { id: socket.id, ...pos });
+  });
+
+  // Add a function to check if a block exists at given coordinates
+  function blockExistsAt(x, y, z) {
+    return preloadedMapData.some(block => block.x === Math.floor(x) && block.y === Math.floor(y) && block.z === Math.floor(z));
+  }
+
   // block‑destruction broadcast
   socket.on('removeBlock', coord => {
     const index = preloadedMapData.findIndex(block => block.x === coord.x && block.y === coord.y && block.z === coord.z);
